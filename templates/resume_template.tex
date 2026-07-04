@@ -1,0 +1,117 @@
+\documentclass[10.5pt,a4paper]{article}
+
+% ---------- Packages ----------
+\usepackage[margin=0.75in]{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+% ---------- Colors ----------
+\definecolor{accent}{HTML}{2454A6}
+
+% ---------- Hyperlink styling ----------
+\hypersetup{
+    colorlinks=true,
+    urlcolor=accent,
+    linkcolor=accent
+}
+
+% ---------- Section heading style ----------
+\titleformat{\section}
+    {\large\bfseries\color{accent}}
+    {}{0em}{}
+    [\titlerule]
+\titlespacing*{\section}{0pt}{10pt}{6pt}
+
+% ---------- Remove page numbers ----------
+\pagestyle{empty}
+
+% ---------- List spacing ----------
+\setlist[itemize]{leftmargin=*, itemsep=2pt, topsep=2pt}
+
+\begin{document}
+
+% ================= HEADER =================
+\begin{center}
+    {\Huge \textbf{\VAR{name}}}\\[6pt]
+    \small
+    \VAR{email}
+    \BLOCK{if contact}
+        \ $\vert$\ \VAR{contact}
+    \BLOCK{endif}
+\end{center}
+
+% ================= OBJECTIVE =================
+\BLOCK{if objective}
+\section*{Objective}
+\VAR{objective}
+\BLOCK{endif}
+
+% ================= EDUCATION =================
+\BLOCK{if education}
+\section*{Education}
+\BLOCK{for edu in education}
+    \noindent
+    \BLOCK{if edu.degree}\textbf{\VAR{edu.degree}}\BLOCK{endif}
+    \BLOCK{if edu.institution} --- \VAR{edu.institution}\BLOCK{endif}
+    \BLOCK{if edu.year} \hfill \VAR{edu.year}\BLOCK{endif}
+    \\[4pt]
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% ================= SKILLS =================
+\BLOCK{if skills}
+\section*{Skills}
+\begin{itemize}
+\BLOCK{for skill in skills}
+    \item \textbf{\VAR{skill.name}}\BLOCK{if skill.description}: \VAR{skill.description}\BLOCK{endif}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endif}
+
+% ================= PROJECTS =================
+\BLOCK{if projects}
+\section*{Projects}
+\BLOCK{for project in projects}
+    \noindent
+    \BLOCK{if project.title}\textbf{\VAR{project.title}}\BLOCK{endif}
+    \BLOCK{if project.subtitle} --- \textit{\VAR{project.subtitle}}\BLOCK{endif}
+    \BLOCK{if project.link}
+        \hfill \href{\VAR{project.link.url}}{\VAR{project.link.text}}
+    \BLOCK{endif}
+    \\
+    \BLOCK{if project.description}
+        \VAR{project.description}\\
+    \BLOCK{endif}
+    \vspace{4pt}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% ================= EXPERIENCE =================
+\BLOCK{if experience}
+\section*{Experience}
+\BLOCK{for exp in experience}
+    \noindent
+    \BLOCK{if exp.role}\textbf{\VAR{exp.role}}\BLOCK{endif}
+    \BLOCK{if exp.company} --- \VAR{exp.company}\BLOCK{endif}
+    \BLOCK{if exp.duration} \hfill \VAR{exp.duration}\BLOCK{endif}
+    \\
+    \BLOCK{if exp.description}
+        \VAR{exp.description}\\
+    \BLOCK{endif}
+    \vspace{4pt}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+% ================= ACHIEVEMENTS / ACTIVITIES =================
+\BLOCK{if activities}
+\section*{Achievements / Activities}
+\begin{itemize}
+\BLOCK{for item in activities}
+    \item \VAR{item}
+\BLOCK{endfor}
+\end{itemize}
+\BLOCK{endif}
+
+\end{document}

@@ -1,0 +1,13 @@
+# Generated output (PDFs, LaTeX build artifacts)
+output/
+
+# Generated resume data (contains personal info — don't commit)
+data/resume_data.json
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# OS clutter
+.DS_Store
