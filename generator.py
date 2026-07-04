@@ -111,6 +111,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     raw_data = load_data(json_path)
+    raw_data.setdefault("heading_color", "2454A6")
+    raw_data.setdefault("profiles", [])
     data = sanitize(raw_data)
 
     rendered_tex = render_template(data)

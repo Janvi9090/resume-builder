@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, colorchooser
 import re
 import json
 import os
@@ -10,10 +10,15 @@ root = tk.Tk()
 root.title("Smart Resume Builder")
 root.geometry("700x700")   # fixed visible window size; content scrolls inside it
 
+# Force the window to the front and give it keyboard/mouse focus on startup.
+# On some Linux window managers, newly-opened Tk windows can appear without
+# focus, making it seem like nothing responds to clicks.
+root.lift()
+root.attributes("-topmost", True)
+root.after_idle(root.attributes, "-topmost", False)
+root.focus_force()
+
 # --- Scrollable canvas setup ---
-# A Canvas + Scrollbar wrap a Frame (main_frame). All form widgets go inside
-# main_frame instead of directly inside root, so the form can grow taller
-# than the visible window and the user scrolls to see the rest.
 canvas = tk.Canvas(root, borderwidth=0)
 scrollbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
 main_frame = tk.Frame(canvas)
@@ -29,26 +34,142 @@ canvas.configure(yscrollcommand=scrollbar.set)
 canvas.pack(side="left", fill="both", expand=True)
 scrollbar.pack(side="right", fill="y")
 
-# Let the mouse wheel scroll the canvas when hovering over the form
 def _on_mousewheel(event):
     canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-canvas.bind_all("<MouseWheel>", _on_mousewheel)          # Windows/macOS
-canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))  # Linux scroll up
-canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))   # Linux scroll down
+canvas.bind_all("<MouseWheel>", _on_mousewheel)
+canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+# Row counter — incremented as we go, so inserting/removing sections later
+# doesn't require manually renumbering every widget below it.
+r = 0
 
 # --- Mandatory Fields ---
-tk.Label(main_frame, text="Full Name *").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+tk.Label(main_frame, text="Full Name *").grid(row=r, column=0, sticky="w", padx=10, pady=5)
 name_entry = tk.Entry(main_frame, width=40)
-name_entry.grid(row=0, column=1, padx=10, pady=5)
+name_entry.grid(row=r, column=1, padx=10, pady=5)
+r += 1
 
-tk.Label(main_frame, text="Email *").grid(row=1, column=0, sticky="w", padx=10, pady=5)
+tk.Label(main_frame, text="Email *").grid(row=r, column=0, sticky="w", padx=10, pady=5)
 email_entry = tk.Entry(main_frame, width=40)
-email_entry.grid(row=1, column=1, padx=10, pady=5)
+email_entry.grid(row=r, column=1, padx=10, pady=5)
+r += 1
 
-tk.Label(main_frame, text="Contact Number *").grid(row=2, column=0, sticky="w", padx=10, pady=5)
-contact_entry = tk.Entry(main_frame, width=40)
-contact_entry.grid(row=2, column=1, padx=10, pady=5)
+tk.Label(main_frame, text="Contact Number *").grid(row=r, column=0, sticky="w", padx=10, pady=5)
+
+# Live validation: only allow digits, and cap length at 10 characters as the
+# user types. This blocks letters/symbols and prevents typing an 11th digit,
+# but we still re-check "exactly 10 digits" at submit time in case the field
+# is left short.
+def validate_contact_input(proposed_value):
+    if proposed_value == "":
+        return True   # allow clearing the field
+    return proposed_value.isdigit() and len(proposed_value) <= 10
+
+vcmd_contact = (main_frame.register(validate_contact_input), "%P")
+contact_entry = tk.Entry(main_frame, width=40, validate="key", validatecommand=vcmd_contact)
+contact_entry.grid(row=r, column=1, padx=10, pady=5)
+r += 1
+
+# --- Heading Color Picker ---
+# Lets the user choose the color used for section labels (Skills, Education,
+# Projects, etc.) in the final PDF. Stored as a 6-digit hex string (no '#')
+# since that's what LaTeX's \definecolor{...}{HTML}{...} expects.
+heading_color_var = tk.StringVar(value="2454A6")   # default: the original accent blue
+
+tk.Label(main_frame, text="Heading Color:").grid(row=r, column=0, sticky="w", padx=10, pady=(15, 5))
+
+color_frame = tk.Frame(main_frame)
+color_frame.grid(row=r, column=1, sticky="w", padx=10, pady=(15, 5))
+
+color_preview = tk.Label(color_frame, text="  ", bg="#" + heading_color_var.get(), relief="sunken", width=3)
+color_preview.pack(side="left", padx=(0, 10))
+
+def set_heading_color(hex_no_hash):
+    heading_color_var.set(hex_no_hash)
+    color_preview.config(bg="#" + hex_no_hash)
+
+def choose_custom_color():
+    # Opens the OS's native color picker (a color wheel on most platforms).
+    result = colorchooser.askcolor(title="Choose Heading Color")
+    if result and result[1]:            # result = ((r,g,b), "#rrggbb") or (None, None) if cancelled
+        hex_val = result[1].lstrip("#").upper()
+        set_heading_color(hex_val)
+
+tk.Button(
+    color_frame, text="Light Blue", bg="#5DADE2",
+    command=lambda: set_heading_color("5DADE2")
+).pack(side="left", padx=2)
+
+tk.Button(
+    color_frame, text="Black", bg="#000000", fg="white",
+    command=lambda: set_heading_color("000000")
+).pack(side="left", padx=2)
+
+tk.Button(
+    color_frame, text="Dark Blue", bg="#1B3A6B", fg="white",
+    command=lambda: set_heading_color("1B3A6B")
+).pack(side="left", padx=2)
+
+tk.Button(
+    color_frame, text="Custom Color...", command=choose_custom_color
+).pack(side="left", padx=2)
+
+r += 1
+
+# --- Section: Profiles / Social Links (dynamic, one card by default) ---
+profiles_var = tk.IntVar()
+profile_entries = []  # list of dicts: {"platform", "url", "text", "row_frame"}
+
+def toggle_profiles():
+    if profiles_var.get():
+        profiles_frame.grid()
+        if not profile_entries:
+            add_profile_row()
+    else:
+        profiles_frame.grid_remove()
+
+tk.Checkbutton(
+    main_frame, text="Include Profiles / Social Links", variable=profiles_var, command=toggle_profiles
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
+
+profiles_frame = tk.Frame(main_frame)
+profiles_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
+
+profiles_container = tk.Frame(profiles_frame)
+profiles_container.pack(fill="x")
+
+def add_profile_row():
+    row_frame = tk.Frame(profiles_container, bd=1, relief="solid", padx=5, pady=5)
+    row_frame.pack(fill="x", pady=4)
+
+    index = len(profile_entries) + 1
+    tk.Label(row_frame, text=f"Profile {index}", font=("TkDefaultFont", 9, "bold")).grid(
+        row=0, column=0, columnspan=2, sticky="w"
+    )
+
+    tk.Label(row_frame, text="Platform (e.g. GitHub):").grid(row=1, column=0, sticky="w")
+    platform_entry = tk.Entry(row_frame, width=30)
+    platform_entry.grid(row=1, column=1, padx=5, sticky="w")
+
+    tk.Label(row_frame, text="Profile URL:").grid(row=2, column=0, sticky="w")
+    url_entry = tk.Entry(row_frame, width=40)
+    url_entry.grid(row=2, column=1, padx=5, sticky="w")
+
+    profile_entries.append({
+        "platform": platform_entry,
+        "url": url_entry,
+        "row_frame": row_frame,
+    })
+
+tk.Button(
+    profiles_frame, text="+ Add Another Profile", command=add_profile_row
+).pack(pady=(5, 0))
+
+profiles_frame.grid_remove()
 
 # --- Section: Objective ---
 objective_var = tk.IntVar()
@@ -61,44 +182,75 @@ def toggle_objective():
 
 tk.Checkbutton(
     main_frame, text="Include Objective", variable=objective_var, command=toggle_objective
-).grid(row=3, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 objective_frame = tk.Frame(main_frame)
-objective_frame.grid(row=4, column=0, columnspan=2, sticky="w", padx=10)
+objective_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
+
 tk.Label(objective_frame, text="Objective:").grid(row=0, column=0, sticky="nw")
 objective_entry = tk.Text(objective_frame, width=45, height=3)
 objective_entry.grid(row=0, column=1)
-objective_frame.grid_remove()  # hidden by default
+objective_frame.grid_remove()
 
-# --- Section: Education ---
+# --- Section: Education (dynamic, one card by default, "Add" for more) ---
 education_var = tk.IntVar()
+education_entries = []  # list of dicts: {"degree", "institution", "year", "row_frame"}
 
 def toggle_education():
     if education_var.get():
         education_frame.grid()
+        if not education_entries:
+            add_education_row()
     else:
         education_frame.grid_remove()
 
 tk.Checkbutton(
     main_frame, text="Include Education", variable=education_var, command=toggle_education
-).grid(row=5, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 education_frame = tk.Frame(main_frame)
-education_frame.grid(row=6, column=0, columnspan=2, sticky="w", padx=10)
+education_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
 
-tk.Label(education_frame, text="Degree:").grid(row=0, column=0, sticky="w")
-degree_entry = tk.Entry(education_frame, width=35)
-degree_entry.grid(row=0, column=1)
+education_container = tk.Frame(education_frame)
+education_container.pack(fill="x")
 
-tk.Label(education_frame, text="Institution:").grid(row=1, column=0, sticky="w")
-institution_entry = tk.Entry(education_frame, width=35)
-institution_entry.grid(row=1, column=1)
+def add_education_row():
+    row_frame = tk.Frame(education_container, bd=1, relief="solid", padx=5, pady=5)
+    row_frame.pack(fill="x", pady=4)
 
-tk.Label(education_frame, text="Year:").grid(row=2, column=0, sticky="w")
-year_entry = tk.Entry(education_frame, width=35)
-year_entry.grid(row=2, column=1)
+    index = len(education_entries) + 1
+    tk.Label(row_frame, text=f"Education {index}", font=("TkDefaultFont", 9, "bold")).grid(
+        row=0, column=0, columnspan=2, sticky="w"
+    )
 
-education_frame.grid_remove()  # hidden by default
+    tk.Label(row_frame, text="Degree:").grid(row=1, column=0, sticky="w")
+    degree_entry = tk.Entry(row_frame, width=35)
+    degree_entry.grid(row=1, column=1, padx=5)
+
+    tk.Label(row_frame, text="Institution:").grid(row=2, column=0, sticky="w")
+    institution_entry = tk.Entry(row_frame, width=35)
+    institution_entry.grid(row=2, column=1, padx=5)
+
+    tk.Label(row_frame, text="Year:").grid(row=3, column=0, sticky="w")
+    year_entry = tk.Entry(row_frame, width=35)
+    year_entry.grid(row=3, column=1, padx=5)
+
+    education_entries.append({
+        "degree": degree_entry,
+        "institution": institution_entry,
+        "year": year_entry,
+        "row_frame": row_frame,
+    })
+
+tk.Button(
+    education_frame, text="+ Add Another Education", command=add_education_row
+).pack(pady=(5, 0))
+
+education_frame.grid_remove()
 
 # --- Section: Skills (dynamic, one row by default, "Add" for more) ---
 skills_var = tk.IntVar()
@@ -107,19 +259,21 @@ skill_entries = []  # list of dicts: {"name": Entry, "desc": Entry, "row_frame":
 def toggle_skills():
     if skills_var.get():
         skills_frame.grid()
-        if not skill_entries:          # show one skill row by default the first time
+        if not skill_entries:
             add_skill_row()
     else:
         skills_frame.grid_remove()
 
 tk.Checkbutton(
     main_frame, text="Include Skills", variable=skills_var, command=toggle_skills
-).grid(row=7, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 skills_frame = tk.Frame(main_frame)
-skills_frame.grid(row=8, column=0, columnspan=2, sticky="w", padx=10)
+skills_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
 
-skills_container = tk.Frame(skills_frame)   # holds all dynamically added skill rows
+skills_container = tk.Frame(skills_frame)
 skills_container.pack(fill="x")
 
 def add_skill_row():
@@ -141,7 +295,7 @@ tk.Button(
     skills_frame, text="+ Add Another Skill", command=add_skill_row
 ).pack(pady=(5, 0))
 
-skills_frame.grid_remove()  # hidden by default
+skills_frame.grid_remove()
 
 # --- Section: Experience (dynamic, one entry by default, "Add" for more) ---
 experience_var = tk.IntVar()
@@ -150,19 +304,21 @@ experience_entries = []  # list of dicts: {"role", "company", "duration", "desc"
 def toggle_experience():
     if experience_var.get():
         experience_frame.grid()
-        if not experience_entries:     # show one experience card by default the first time
+        if not experience_entries:
             add_experience_row()
     else:
         experience_frame.grid_remove()
 
 tk.Checkbutton(
     main_frame, text="Include Experience / Internships", variable=experience_var, command=toggle_experience
-).grid(row=9, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 experience_frame = tk.Frame(main_frame)
-experience_frame.grid(row=10, column=0, columnspan=2, sticky="w", padx=10)
+experience_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
 
-experience_container = tk.Frame(experience_frame)   # holds all dynamically added experience rows
+experience_container = tk.Frame(experience_frame)
 experience_container.pack(fill="x")
 
 def add_experience_row():
@@ -202,28 +358,30 @@ tk.Button(
     experience_frame, text="+ Add Another Experience", command=add_experience_row
 ).pack(pady=(5, 0))
 
-experience_frame.grid_remove()  # hidden by default
+experience_frame.grid_remove()
 
-# --- Section: Achievements / Activities (dynamic, one entry by default, "Add" for more) ---
+# --- Section: Achievements / Activities (dynamic, one entry by default) ---
 achievements_var = tk.IntVar()
 achievement_entries = []  # list of dicts: {"entry": Entry, "row_frame": Frame}
 
 def toggle_achievements():
     if achievements_var.get():
         achievements_frame.grid()
-        if not achievement_entries:    # show one achievement box by default the first time
+        if not achievement_entries:
             add_achievement_row()
     else:
         achievements_frame.grid_remove()
 
 tk.Checkbutton(
     main_frame, text="Include Achievements / Activities", variable=achievements_var, command=toggle_achievements
-).grid(row=11, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 achievements_frame = tk.Frame(main_frame)
-achievements_frame.grid(row=12, column=0, columnspan=2, sticky="w", padx=10)
+achievements_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
 
-achievements_container = tk.Frame(achievements_frame)  # holds all dynamically added achievement rows
+achievements_container = tk.Frame(achievements_frame)
 achievements_container.pack(fill="x")
 
 def add_achievement_row():
@@ -241,28 +399,30 @@ tk.Button(
     achievements_frame, text="+ Add Another Achievement", command=add_achievement_row
 ).pack(pady=(5, 0))
 
-achievements_frame.grid_remove()  # hidden by default
+achievements_frame.grid_remove()
 
 # --- Section: Projects (dynamic, one card by default, "Add" for more) ---
 projects_var = tk.IntVar()
-project_entries = []  # list of dicts: {"title", "subtitle", "desc", "link", "row_frame"}
+project_entries = []  # list of dicts: {"title", "subtitle", "desc", "link", "link_text", "row_frame"}
 
 def toggle_projects():
     if projects_var.get():
         projects_frame.grid()
-        if not project_entries:        # show one project card by default the first time
+        if not project_entries:
             add_project_row()
     else:
         projects_frame.grid_remove()
 
 tk.Checkbutton(
     main_frame, text="Include Projects", variable=projects_var, command=toggle_projects
-).grid(row=13, column=0, sticky="w", padx=10, pady=(15, 0))
+).grid(row=r, column=0, sticky="w", padx=10, pady=(15, 0))
+r += 1
 
 projects_frame = tk.Frame(main_frame)
-projects_frame.grid(row=14, column=0, columnspan=2, sticky="w", padx=10)
+projects_frame.grid(row=r, column=0, columnspan=2, sticky="w", padx=10)
+r += 1
 
-projects_container = tk.Frame(projects_frame)   # holds all dynamically added project cards
+projects_container = tk.Frame(projects_frame)
 projects_container.pack(fill="x")
 
 def add_project_row():
@@ -307,7 +467,7 @@ tk.Button(
     projects_frame, text="+ Add Another Project", command=add_project_row
 ).pack(pady=(5, 0))
 
-projects_frame.grid_remove()  # hidden by default
+projects_frame.grid_remove()
 
 # --- Submit ---
 def submit():
@@ -324,11 +484,17 @@ def submit():
         messagebox.showerror("Invalid Email", "Please enter a valid email address (e.g. name@example.com).")
         return
 
-    # --- Build the data dictionary (matches the JSON structure from the spec) ---
+    if not (contact.isdigit() and len(contact) == 10):
+        messagebox.showerror("Invalid Contact Number", "Contact number must be exactly 10 digits.")
+        return
+
+    # --- Build the data dictionary ---
     data = {
         "name": name,
         "email": email,
         "contact": contact,
+        "heading_color": heading_color_var.get(),
+        "profiles": [],
         "objective": "",
         "skills": [],
         "education": [],
@@ -337,28 +503,43 @@ def submit():
         "activities": [],
     }
 
+    # Profiles / Social Links
+    if profiles_var.get():
+        for entry in profile_entries:
+            platform = entry["platform"].get().strip()
+            url = entry["url"].get().strip()
+
+            if not url:   # a profile with no URL has nothing to link to — skip it
+                continue
+
+            # Display text: platform name if given, otherwise fall back to the raw URL
+            display_text = platform if platform else url
+
+            data["profiles"].append({"url": url, "text": display_text})
+
     # Objective
     if objective_var.get():
         objective_text = objective_entry.get("1.0", "end").strip()
         if objective_text:
             data["objective"] = objective_text
 
-    # Education (single entry, stored as a list per the spec's schema)
+    # Education
     if education_var.get():
-        degree = degree_entry.get().strip()
-        institution = institution_entry.get().strip()
-        year = year_entry.get().strip()
+        for entry in education_entries:
+            degree = entry["degree"].get().strip()
+            institution = entry["institution"].get().strip()
+            year = entry["year"].get().strip()
 
-        education_data = {}
-        if degree:
-            education_data["degree"] = degree
-        if institution:
-            education_data["institution"] = institution
-        if year:
-            education_data["year"] = year
+            education_data = {}
+            if degree:
+                education_data["degree"] = degree
+            if institution:
+                education_data["institution"] = institution
+            if year:
+                education_data["year"] = year
 
-        if education_data:
-            data["education"].append(education_data)
+            if education_data:   # skip fully-empty cards
+                data["education"].append(education_data)
 
     # Skills
     if skills_var.get():
@@ -366,7 +547,7 @@ def submit():
             skill_name = entry["name"].get().strip()
             skill_desc = entry["desc"].get().strip()
 
-            if not skill_name:      # skip rows where the skill name itself is empty
+            if not skill_name:
                 continue
 
             skill_data = {"name": skill_name}
@@ -393,14 +574,14 @@ def submit():
             if exp_description:
                 experience_data["description"] = exp_description
 
-            if experience_data:   # skip fully-empty cards
+            if experience_data:
                 data["experience"].append(experience_data)
 
     # Achievements / Activities
     if achievements_var.get():
         for entry in achievement_entries:
             achievement_text = entry["entry"].get().strip()
-            if achievement_text:   # skip empty rows
+            if achievement_text:
                 data["activities"].append(achievement_text)
 
     # Projects
@@ -425,12 +606,12 @@ def submit():
                     "text": link_text if link_text else link_url,
                 }
 
-            if project_data:   # skip fully-empty cards
+            if project_data:
                 data["projects"].append(project_data)
 
     # --- Confirmation before saving ---
     if not messagebox.askyesno("Confirm", "Is all the information correct?"):
-        return   # user chose "No" — let them go back and edit before re-submitting
+        return
 
     # --- Write to data/resume_data.json ---
     try:
@@ -443,9 +624,6 @@ def submit():
         return
 
     # --- Auto-trigger generator.py to build the PDF ---
-    # sys.executable ensures we use the same Python interpreter (and venv)
-    # that's currently running gui.py, rather than whatever "python3" resolves
-    # to on the system PATH.
     try:
         result = subprocess.run(
             [sys.executable, "generator.py"],
@@ -460,8 +638,6 @@ def submit():
         return
 
     if result.returncode != 0:
-        # Show the last part of the error so the user has something to act on,
-        # without dumping the entire LaTeX log into a popup.
         error_tail = result.stdout[-800:] if result.stdout else result.stderr[-800:]
         messagebox.showerror(
             "PDF Generation Failed",
@@ -473,6 +649,6 @@ def submit():
 
     messagebox.showinfo("Success", "Resume generated at output/resume.pdf")
 
-tk.Button(main_frame, text="Submit", command=submit).grid(row=15, column=0, columnspan=2, pady=25)
+tk.Button(main_frame, text="Submit", command=submit).grid(row=r, column=0, columnspan=2, pady=25)
 
 root.mainloop()
